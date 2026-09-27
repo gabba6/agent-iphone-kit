@@ -1,0 +1,6 @@
+interface:
+  display_name: "iPhone"
+  short_description: "Control a real iPhone via agent-device, capture screens and animations"
+  default_prompt: "Use $iphone to operate my iPhone and capture the requested screens or animations."
+policy:
+  allow_implicit_invocation: true

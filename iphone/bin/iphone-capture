@@ -1,0 +1,154 @@
+#!/usr/bin/env node
+// iphone-capture: USB screen recording of the iPhone (60 fps, real timestamps) and analysis for agents.
+import { existsSync, statSync } from 'node:fs';
+import { join } from 'node:path';
+import { ensurePath, run, f, gb, TOOL_DIR, PROJECT_DIR, codeError } from '../lib/util.mjs';
+import { createRecorder, ID_RE } from '../lib/recorder.mjs';
+import { createDevice, parseStep, loadAgentDeviceEnv } from '../lib/device.mjs';
+import * as F from '../lib/format.mjs';
+
+const HELP = `iphone-capture - iPhone-Bildschirm per USB aufnehmen und auswerten (Zeiten in s ab 1. Videobild)
+
+  start [SEK]                  Aufnahme starten (Standard 10, max 120); kehrt nach Startsignal zurueck (ca. 3 s)
+  stop [--no-analyze]          stoppen -> MP4, fps, einzigartige Bilder, Bewegungen
+  clip SEK [--after S] [-- AKTION]  feste Dauer, blockierend; AKTION = agent-device-Befehl, z. B. -- press 121 812
+  changes [ID] [--curve N] [--region x0,y0,x1,y1] [--detail N] [--quiet MS]
+                               Bildwechsel als Text; --curve: Fortschrittskurve + Easing
+  frames [ID] T1 [T2 ..]       bis 8 Einzelbilder (erstes Bild ab T) als JPG [--max-dim 600] [--png]
+  sheet [ID] [--segment N | --from S --to S] [--cells 12] [--cols 6] [--width 150]
+                               Kontaktbogen mit echten ms-Zeiten als PNG
+  import DATEI                 vorhandenes MP4/MOV (QuickTime, Bildschirmaufnahme) uebernehmen, danach changes/frames/sheet
+  status [--list] | list       laufende/letzte Aufnahme, Speicher
+  keep ID | unkeep ID          vor automatischem Aufraeumen schuetzen
+  clean [--dry-run]            Aufraeumen: eigene Aufnahmen > 14 Tage oder > 5 GB gesamt
+  doctor                       Voraussetzungen pruefen
+  setup-app                    einmalige Kamera-Freigabe fuer die App-Huelle (Dialog am Mac bestaetigen)
+Optionen: --json (maschinenlesbar), --launch auto|direct|app
+Ablage: $IPHONE_RECORDINGS_DIR oder ${join(PROJECT_DIR, 'recordings')}. Nur die MP4 wird behalten.`;
+
+function parse(argv) {
+  const pos = [], opt = {}; let rest = null;
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === '--') { rest = argv.slice(i + 1); break; }
+    if (a.startsWith('--')) {
+      const [k, v] = a.slice(2).split('=');
+      const flag = ['json', 'list', 'no-analyze', 'dry-run', 'png', 'help'].includes(k);
+      opt[k] = v ?? (flag ? true : argv[++i]);
+      if (!flag && opt[k] === undefined) throw codeError('usage', `--${k} braucht einen Wert.`);
+    } else pos.push(a);
+  }
+  return { cmd: pos.shift(), pos, opt, rest };
+}
+
+const numOpt = (v, name) => {
+  if (v === undefined) return undefined;
+  const n = Number(v);
+  if (!Number.isFinite(n)) throw codeError('usage', `--${name}: Zahl erwartet.`);
+  return n;
+};
+const takeId = pos => (pos.length && (ID_RE.test(pos[0]) || pos[0] === 'last') ? pos.shift() : undefined);
+
+async function doctor(recorder) {
+  const out = [];
+  const ok = (good, text) => out.push(`${good ? 'ok  ' : 'FEHLT'} ${text}`);
+  ok(Number(process.versions.node.split('.')[0]) >= 20, `Node ${process.versions.node}`);
+  for (const t of ['ffmpeg', 'ffprobe']) { const r = await run(t, ['-version'], { timeout: 10000 }); ok(r.code === 0, `${t} ${String(r.stdout).split('\n')[0].split(' ').slice(2, 3).join('')}`); }
+  const src = join(TOOL_DIR, 'helper', 'usb-screen.swift');
+  const fresh = existsSync(recorder.helper) && statSync(recorder.helper).mtimeMs >= statSync(src).mtimeMs;
+  ok(fresh, `USB-Helfer ${recorder.helper}${fresh ? '' : ' (fehlt/veraltet: zsh build.sh)'}`);
+  if (existsSync(recorder.helper)) {
+    const r = await run(recorder.helper, ['--access'], { timeout: 5000 });
+    const ev = String(r.stdout).split('\n').filter(Boolean).map(l => { try { return JSON.parse(l); } catch { return {}; } }).find(e => e.event === 'access');
+    ok(!!ev?.granted, `Kamerarecht in diesem Prozess: ${ev ? (ev.granted ? 'ja (direkte Aufnahme moeglich)' : `nein (${ev.status}); Aufnahme nur ueber Claude-Desktop-MCP oder App-Huelle`) : `unbekannt (${r.code})`}`);
+  }
+  ok(existsSync(recorder.app), `App-Huelle ${recorder.app}`);
+  const consent = recorder.appConsent();
+  out.push(`${consent ? 'ok  ' : 'info'} App-Freigabe: ${consent ? `erteilt ${consent.granted_at}` : 'nicht erteilt (einmalig: iphone-capture setup-app, Dialog bestaetigen)'}`);
+  const st = await recorder.status();
+  ok(st.free_bytes > 2 * 1073741824, `Ablage ${st.root}: ${st.count} Aufnahmen, frei ${gb(st.free_bytes)}`);
+  loadAgentDeviceEnv();
+  const ad = await run(process.env.AGENT_DEVICE_BIN || 'agent-device', ['device', 'status'], { timeout: 15000 });
+  ok(ad.code === 0, `agent-device: ${String(ad.stdout || ad.stderr).trim().split('\n')[0].slice(0, 140)}`);
+  return out.join('\n');
+}
+
+async function main() {
+  ensurePath();
+  const { cmd, pos, opt, rest } = parse(process.argv.slice(2));
+  if (!cmd || cmd === 'help' || opt.help) { console.log(HELP); return 0; }
+  const recorder = createRecorder({ launch: opt.launch });
+  const json = !!opt.json;
+  const print = (obj, text) => console.log(json ? JSON.stringify(obj, (k, v) => (k === 'diff' || k === 'pts_ms' ? undefined : v)) : text);
+  const onEvent = e => { if (e.event === 'access_pending') process.stderr.write('Warte auf Kamera-Freigabe (Dialog am Mac bestaetigen) ...\n'); };
+
+  switch (cmd) {
+    case 'start': {
+      const s = await recorder.start({ seconds: pos[0] ? Number(pos[0]) : 10, onEvent });
+      print(s, F.fmtStart(s)); return 0;
+    }
+    case 'stop': { const r = await recorder.stop({ analyze: !opt['no-analyze'] }); print(r, F.fmtSummary(r)); return 0; }
+    case 'clip': {
+      const seconds = Number(pos[0]);
+      if (!Number.isFinite(seconds)) throw codeError('usage', 'clip SEKUNDEN angeben, z. B. clip 3 -- press 121 812');
+      let action;
+      if (rest?.length) {
+        const step = parseStep(rest);
+        const device = createDevice();
+        action = Object.assign(async () => { const r = await device.exec(step); if (!r.ok) throw codeError('agent_device', r.text); return r.text; }, { label: step.join(' ') });
+      }
+      const r = await recorder.clip({ seconds, after: numOpt(opt.after, 'after') ?? 0.5, action, analyze: !opt['no-analyze'], onEvent });
+      print(r, F.fmtSummary(r)); return r.action_error ? 1 : 0;
+    }
+    case 'changes': {
+      const id = takeId(pos);
+      const region = opt.region ? String(opt.region).split(',').map(Number) : undefined;
+      if (region && (region.length !== 4 || region.some(v => !Number.isFinite(v)))) throw codeError('usage', '--region x0,y0,x1,y1 in Punkten.');
+      const out = await recorder.changes({ id, quietMs: numOpt(opt.quiet, 'quiet'), curve: numOpt(opt.curve, 'curve'), region });
+      print({ id: out.id, unique: out.unique, segments: out.segments, curve: out.curve }, F.fmtChanges(out, { detail: numOpt(opt.detail, 'detail') })); return 0;
+    }
+    case 'frames': {
+      const id = takeId(pos);
+      const times = pos.map(Number);
+      const out = await recorder.frames({ id, times, maxDim: numOpt(opt['max-dim'], 'max-dim') ?? 600, format: opt.png ? 'png' : 'jpg' });
+      print(out, F.fmtFrames(out)); return 0;
+    }
+    case 'sheet': {
+      const id = takeId(pos);
+      const out = await recorder.sheet({ id, segment: numOpt(opt.segment, 'segment'), from: numOpt(opt.from, 'from'), to: numOpt(opt.to, 'to'),
+        cells: numOpt(opt.cells, 'cells') ?? 12, cols: numOpt(opt.cols, 'cols') ?? 6, width: numOpt(opt.width, 'width') ?? 150 });
+      print(out, F.fmtSheet(out)); return 0;
+    }
+    case 'import': {
+      if (!pos[0]) throw codeError('usage', 'import DATEI.mp4|.mov');
+      const r = await recorder.importVideo({ path: pos[0], analyze: !opt['no-analyze'] });
+      print(r, F.fmtSummary(r)); return 0;
+    }
+    case 'status': { const st = await recorder.status(); const l = opt.list ? await recorder.list({ limit: 10 }) : null; print({ ...st, list: l }, F.fmtStatus(st, l)); return 0; }
+    case 'list': { const st = await recorder.status(); const l = await recorder.list({ limit: 30 }); print(l, F.fmtStatus(st, l)); return 0; }
+    case 'keep': case 'unkeep': {
+      const id = await recorder.keep(takeId(pos), cmd === 'keep');
+      print({ id, keep: cmd === 'keep' }, `${id}: ${cmd === 'keep' ? 'wird nicht automatisch geloescht' : 'darf wieder aufgeraeumt werden'}`); return 0;
+    }
+    case 'clean': {
+      const r = await recorder.cleanup({ dryRun: !!opt['dry-run'] });
+      print(r, r.removed.length ? r.removed.map(x => `${r.dry_run ? 'wuerde loeschen' : 'geloescht'}: ${x.id} (${(x.size / 1048576).toFixed(1)} MB, ${x.reason})`).join('\n') : 'Nichts aufzuraeumen.'); return 0;
+    }
+    case 'doctor': console.log(await doctor(recorder)); return 0;
+    case 'setup-app': {
+      process.stderr.write('Starte App-Huelle. macOS fragt einmal nach dem Kamerazugriff fuer "iPhone Capture" - bitte am Mac bestaetigen.\n');
+      const r = await recorder.setupApp({ onEvent });
+      print(r, r.granted ? 'Freigabe erteilt. iphone-capture nimmt ab jetzt ueber die App-Huelle auf, wenn der aufrufende Prozess kein Kamerarecht hat.'
+        : `Keine Freigabe (${r.status}). Systemeinstellungen > Datenschutz > Kamera: "iPhone Capture" erlauben.`);
+      return r.granted ? 0 : 1;
+    }
+    default: throw codeError('usage', `Unbekannter Befehl: ${cmd}. iphone-capture help`);
+  }
+}
+
+main().then(code => { process.exitCode = code; }, e => {
+  const json = process.argv.includes('--json');
+  if (json) console.log(JSON.stringify({ error: { code: e.code ?? 'error', message: e.message } }));
+  else console.error(`Fehler${typeof e.code === 'string' ? ` (${e.code})` : ''}: ${e.message}`);
+  process.exitCode = e.code === 'usage' ? 2 : 1;
+});

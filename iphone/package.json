@@ -1,0 +1,22 @@
+{
+  "name": "agent-iphone-kit",
+  "version": "1.0.0",
+  "description": "Let AI coding agents drive a real iPhone over USB and measure UI animations at 60 fps with real device timestamps. USB screen recording, motion analysis and a lean MCP server for agent-device. No dependencies.",
+  "type": "module",
+  "private": true,
+  "license": "MIT",
+  "author": "Gabriel Petrovic",
+  "repository": "github:gabba6/agent-iphone-kit",
+  "os": ["darwin"],
+  "bin": {
+    "iphone-capture": "bin/iphone-capture",
+    "iphone-mcp": "bin/iphone-mcp"
+  },
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "test:device": "IPHONE_REAL_DEVICE=1 node --test --test-concurrency=1 test/device.test.mjs",
+    "build": "zsh build.sh",
+    "demo": "node examples/make-demo-clip.mjs"
+  }
+}

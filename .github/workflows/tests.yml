@@ -1,0 +1,42 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: npm test (Node ${{ matrix.node }})
+    runs-on: macos-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [20, 22]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      - name: Install ffmpeg
+        run: brew install ffmpeg
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: '1'
+          HOMEBREW_NO_INSTALL_CLEANUP: '1'
+
+      - name: Shell syntax
+        run: for f in tools/*.sh iphone/build.sh; do zsh -n "$f"; done
+
+      - name: Type-check the Swift helper
+        run: swiftc -typecheck -swift-version 5 iphone/helper/usb-screen.swift
+
+      - name: Offline tests (fake USB helper, fake agent-device)
+        working-directory: iphone
+        run: npm test

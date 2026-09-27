@@ -1,0 +1,39 @@
+# Recordings, screenshots and logs contain private screen content
+recordings/
+logs/
+*.mp4
+*.mov
+*.png
+*.jpg
+*.jpeg
+*.heic
+*.gif
+*.webp
+*.ndjson
+*.log
+# Only hand-checked, synthetic images for the documentation
+!docs/images/*.png
+
+# Local measurements, notes, backups and machine-specific settings (never published)
+bench/
+backups/
+privat/
+.env.local
+.env.*.local
+*.local.md
+*.local.test.mjs
+skill/iphone/LOCAL.md
+LOCAL.md
+
+# Build output of iphone/build.sh and the local camera-consent marker
+iphone/helper/usb-screen
+iphone/helper/*.app/
+iphone/helper/.app-access.json
+
+# Local compatibility symlink (old script name)
+tools/desktop-mcp-eintragen.sh
+
+# Third-party code and tooling
+WebDriverAgent/
+node_modules/
+.DS_Store

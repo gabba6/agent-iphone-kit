@@ -1,0 +1,43 @@
+#!/usr/bin/env node
+// Lean MCP server "iphone" for Claude Desktop (stdio). Device control via the agent-device CLI, recording via usb-screen.
+// Claude Desktop entry: { "command": "/opt/homebrew/bin/node", "args": ["<path>/iphone/bin/iphone-mcp"] }
+import { ensurePath } from '../lib/util.mjs';
+import { createDevice, loadAgentDeviceEnv } from '../lib/device.mjs';
+import { createRecorder } from '../lib/recorder.mjs';
+import { createMcpServer } from '../lib/mcp.mjs';
+import { TOOLS, INSTRUCTIONS, createToolHandlers } from '../lib/tools.mjs';
+import { readFileSync } from 'node:fs';
+
+ensurePath();
+const addedEnv = loadAgentDeviceEnv();
+const log = msg => process.stderr.write(`[iphone-mcp] ${msg}\n`);
+if (addedEnv.length) log(`Umgebung aus ~/.zshenv ergaenzt: ${addedEnv.join(', ')}`);
+const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+const recorder = createRecorder();
+const startedHere = new Set();
+const device = createDevice({
+  // Log actions during a recording with the wall clock (approximate video time in the result).
+  onMutation: async (label, t0, t1) => { if (recorder.currentId()) await recorder.markAction(label, t0, t1).catch(() => {}); },
+});
+const handlers = createToolHandlers({ device, recorder });
+const server = createMcpServer({
+  name: 'iphone', version: pkg.version, instructions: INSTRUCTIONS, tools: TOOLS, log,
+  call: async (name, args) => {
+    const res = await handlers(name, args);
+    if (name === 'record_start') { const id = recorder.currentId(); if (id) startedHere.add(id); }
+    return res;
+  },
+});
+
+let closing = false;
+async function shutdown() {
+  if (closing) return;
+  closing = true;
+  // Cleanly stop a recording started by this process (otherwise it runs until its maximum duration).
+  const id = recorder.currentId();
+  if (id && startedHere.has(id)) await recorder.stop({ id, analyze: false }).catch(e => log(`Stopp beim Beenden: ${e.message}`));
+  process.exit(0);
+}
+process.on('SIGTERM', shutdown);
+process.on('SIGINT', shutdown);
+server.serveStdio({ onClose: shutdown });
