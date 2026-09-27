@@ -139,7 +139,7 @@ Environment: iPhone 17 Pro (iOS 27.0) over USB, macOS 27.0, Xcode 27.0, agent-de
 ## Requirements
 
 - A Mac with **macOS** and **Xcode** (tested on macOS 27 / Xcode 27; the app wrapper declares macOS 14 as minimum, older versions are untested). agent-device builds its XCTest runner with Xcode; `swiftc` builds the USB helper.
-- **Node.js 20+** (no npm dependencies) and **ffmpeg/ffprobe** (`brew install ffmpeg`).
+- **Node.js 20+** (no npm dependencies) and **ffmpeg/ffprobe** (`brew install ffmpeg`). Contact-sheet labels need an ffmpeg build with the `drawtext` filter; without it (e.g. some Homebrew bottles) sheets are produced unlabeled and the frame times are printed as text.
 - **agent-device** (`npm install -g agent-device`).
 - A **real iPhone** connected via USB, Developer Mode enabled, the Mac trusted.
 - An **Apple team ID** to sign the runner. A free personal team works, with limits: profiles expire after 7 days (agent-device then rebuilds automatically, 15–25 s) and at most 3 self-signed apps can be installed.

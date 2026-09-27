@@ -215,6 +215,19 @@ test('frames, sheet, changes mit Kurve', async t => {
   assert.ok(Math.abs(ch.curve.fit[0].dur_ms - 250) < 20, `dur ${ch.curve.fit[0].dur_ms}`);
 });
 
+// ffmpeg builds without the drawtext filter (e.g. Homebrew bottles on CI) must still produce a sheet.
+test('sheet ohne drawtext: unbeschriftet statt Fehler', async t => {
+  const root = await tempDir(t);
+  process.env.IPHONE_CAPTURE_NO_DRAWTEXT = '1';
+  t.after(() => { delete process.env.IPHONE_CAPTURE_NO_DRAWTEXT; });
+  const rec = make(root);
+  await rec.clip({ seconds: 2 });
+  const sh = await rec.sheet({ cells: 6 });
+  assert.ok(existsSync(sh.path));
+  assert.equal(sh.cells.length, 6);
+  assert.equal(sh.labeled, false);
+});
+
 test('Speicherpruefung vor Start', async t => {
   const root = await tempDir(t);
   const rec = make(root, { minFreeMB: 1e9 });

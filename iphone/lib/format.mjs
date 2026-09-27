@@ -88,7 +88,7 @@ export function fmtFrames(out) {
 
 export function fmtSheet(out) {
   return [`${out.id}: Kontaktbogen ${out.window}, ${f(out.from_s, 3)}-${f(out.to_s, 3)} s, ${out.cells.length} von ${out.frames_in_window} Bildern, ${out.w}x${out.h} px (ca. ${Math.round(out.w * out.h / 750)} Bild-Tokens).`,
-    `Zeiten (s): ${out.cells.map(t => f(t, 3)).join(' ')}${out.labeled ? '' : ' (ohne Beschriftung: Schrift fehlt)'}`, out.path].join('\n');
+    `Zeiten (s): ${out.cells.map(t => f(t, 3)).join(' ')}${out.labeled ? '' : ' (ohne Beschriftung: Schrift oder ffmpeg-Filter drawtext fehlt)'}`, out.path].join('\n');
 }
 
 export function fmtStatus(st, list) {

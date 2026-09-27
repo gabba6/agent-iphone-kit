@@ -2,7 +2,7 @@
 // progress curve, single frames and contact sheet. Only ffmpeg/ffprobe, no packages.
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { mustRun, codeError, pct, mapLimit } from './util.mjs';
+import { run, mustRun, codeError, pct, mapLimit } from './util.mjs';
 
 // Grayscale grid for comparison: 1/6 of the width (1206 -> 201), height to match. A pixel counts as changed at
 // |delta| > 12, a frame as changed from 6 pixels on (calibrated on a static USB recording: 1 unique frame out of 263).
@@ -10,6 +10,17 @@ export const GRID_W = 201;
 export const PIXEL_DELTA = 12;
 export const DEFAULTS = { minPx: 6, quietMs: 300, topPt: 56 }; // 56 pt: status bar + expanded Dynamic Island
 const FONT = ['/System/Library/Fonts/Supplemental/Arial.ttf', '/System/Library/Fonts/Helvetica.ttc'].find(p => existsSync(p));
+
+// Some ffmpeg builds (e.g. current Homebrew bottles) ship without the drawtext filter; then the sheet stays unlabeled.
+let drawtextOk;
+async function canDrawText() {
+  if (process.env.IPHONE_CAPTURE_NO_DRAWTEXT === '1') return false;
+  if (drawtextOk === undefined) {
+    const r = await run('ffmpeg', ['-hide_banner', '-filters'], { timeout: 15000 }).catch(() => null);
+    drawtextOk = !!r && /\sdrawtext\s/.test(String(r.stdout));
+  }
+  return drawtextOk;
+}
 
 // Scale px -> iOS points (@3x from 1080 px width, otherwise @2x).
 export const pointScale = width => (width >= 1080 ? 3 : 2);
@@ -310,14 +321,14 @@ export async function contactSheet(mp4, ptsMs, firstPtsS, indices, { outPath, wi
   const c = Math.min(cols, indices.length);
   const ss = Math.max(0, ptsMs[i0] / 1000 - 0.0005).toFixed(6);
   const sel = rel.map(k => `eq(n\\,${k})`).join('+');
-  const label = FONT
+  const label = FONT && await canDrawText()
     ? `,drawtext=fontfile=${FONT}:text='%{eif\\:round((t-${firstPtsS.toFixed(6)})*1000)\\:d} ms':x=4:y=4:fontsize=${Math.max(12, Math.round(cellW / 9))}:fontcolor=black:box=1:boxcolor=yellow@0.85:boxborderw=3`
     : '';
   await mustRun('ffmpeg', ['-nostdin', '-v', 'error', '-copyts', '-ss', ss, '-i', mp4, '-an',
     '-vf', `select='${sel}',scale=${cellW}:-2${label},tile=${c}x${rows}:padding=4:margin=4:color=white`,
     '-fps_mode', 'passthrough', '-frames:v', '1', '-y', outPath], { timeout: 60000 });
   const cellH = Math.round(cellW * height / width / 2) * 2;
-  return { path: outPath, w: c * cellW + (c - 1) * 4 + 8, h: rows * cellH + (rows - 1) * 4 + 8, cells: indices.map(i => round(ptsMs[i] / 1000, 4)), labeled: !!FONT };
+  return { path: outPath, w: c * cellW + (c - 1) * 4 + 8, h: rows * cellH + (rows - 1) * 4 + 8, cells: indices.map(i => round(ptsMs[i] / 1000, 4)), labeled: !!label };
 }
 
 // Picks up to max frames evenly from [a, b] (indices), first and last always included.

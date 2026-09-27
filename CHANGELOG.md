@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Contact sheets fall back to unlabeled tiles (times printed as text) when ffmpeg lacks the `drawtext` filter, instead of failing.
+
 ## 1.0.0 – 2026-09-27
 
 First public release.
